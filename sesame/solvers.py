@@ -2,12 +2,10 @@
 #
 # This file is part of Sesame. It is subject to the license terms in the file
 # LICENSE.rst found in the top-level directory of this distribution.
-
+import time
 import numpy as np
-from scipy.io import savemat
-from . import analyzer
 from .utils import save_sim
-
+import datetime
 from .analyzer import Analyzer
 
 import scipy.sparse.linalg as lg
@@ -17,9 +15,10 @@ from .getF import getF
 from .jacobian import getJ
 
 import logging
-logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
+# logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
+logging.basicConfig(level=logging.CRITICAL)
 
-__all__ = ['solve', 'IVcurve']
+__all__ = ['solve', 'IVcurve', 'IVcurve_save']
 
 # check if MUMPS is available
 mumps_available = False
@@ -154,7 +153,10 @@ class Solver():
                 logging.info("Solving for the equilibrium electrostatic potential")
 
             if guess is None:
+                #A) Linear guess
                 guess = self.make_guess(system)
+                # #B) Local charge neutrality guess
+                # guess = (-2*system.bl -system.Eg)/(2) - (1/2)*np.log(system.Nc / system.Nv) + np.arcsinh(system.rho/(2*system.ni)) #LCN , sans unité
             else:
                 # testing of the data type of guess.
                 if type(guess) is dict:
@@ -206,10 +208,16 @@ class Solver():
     def _sparse_solver(self, J, f):
         spsolve = lg.spsolve
         if self.use_mumps and mumps_available: 
+            print("using mumps")
             spsolve = mumps.spsolve
         else:
             J = J.tocsr()
+        
+        #tic=time.time()
         dx = spsolve(J, f)
+        
+        #toc=time.time()-tic
+        #print(f" spsolve Elapsed time: {toc:.3f} second(s)!")
         return dx
 
 
@@ -257,7 +265,10 @@ class Solver():
                     break
 
                 # solve linear system
+                #tic = time.time()
                 f, J = self._get_system(x, system, periodic_bcs)
+                #toc = time.time() - tic
+                #print(f" _get system Elapsed time: {toc:.3f} second(s)!")
                 if gamma != 1:
                     f -= (1-gamma)*f0
 
@@ -297,7 +308,7 @@ class Solver():
         else:
             return None
 
-    def IVcurve(self, system, voltages, file_name, guess=None, tol=1e-6, 
+    def IVcurve(self, system, voltages, guess=None, tol=1e-6,
                 periodic_bcs=True, maxiter=300, verbose=True, htp=1, fmt='npz'):
         """
         Solve the Drift Diffusion Poisson equations for the voltages provided. The
@@ -382,6 +393,12 @@ class Solver():
         J = np.zeros((len(Vapp),))
         J[:] = np.nan
 
+        result_array = {'efn': np.empty((len(voltages), nx)),
+                    'efp': np.empty((len(voltages), nx)),\
+                    'v': np.empty((len(voltages), nx))}
+
+        last_converged_idx = 0
+
         for idx, vapp in enumerate(Vapp):
 
             if verbose:
@@ -396,15 +413,25 @@ class Solver():
 
             if result is not None:
                 # 1. Save efn, efp, v
-                name = file_name + "_{0}".format(idx)
-                # add some system settings to the saved results
 
-                if fmt == 'mat':
-                    save_sim(system, result, name, fmt='mat')
-                else:
-                    filename = "%s.gzip" % name
-                    save_sim(system, result, filename)
-                # 2. Compute the steady state current
+                # if file_name is not None:
+                #
+                #     name = file_name + "_{0}".format(idx)
+                #     # add some system settings to the saved results
+                #
+                #     if fmt == 'mat':
+                #         save_sim(system, result, name, fmt='mat')
+                #     else:
+                #         filename = "%s.gzip" % name
+                #         save_sim(system, result, filename)
+                #     # 2. Compute the steady state current
+
+                result_array['efn'][idx, :] = result['efn']
+                result_array['efp'][idx, :] = result['efp']
+                result_array['v'][idx, :] = result['v']
+
+                last_converged_idx = idx
+
                 try:
                     az = Analyzer(system, result)
                     J[idx] = az.full_current()
@@ -415,11 +442,170 @@ class Solver():
             else:
                 logging.info("The solver failed to converge for the applied voltage"\
                       + " {0} V (index {1}).".format(voltages[idx], idx))
-                return J
-                break
-        return J
+
+                result_array['efn'][idx, :] = np.nan
+                result_array['efp'][idx, :] = np.nan
+                result_array['v'][idx, :] = np.nan
+
+                # set guess for next voltage to the last converged solution
+                result = {'efn': result_array['efn'][last_converged_idx, :],\
+                          'efp': result_array['efp'][last_converged_idx, :],\
+                          'v': result_array['v'][last_converged_idx, :]}
+                #return J, result
+                break #breaks if the solver does not converge #A MODIFIER
+
+        return J, result_array
+    
+    def IVcurve_save(self, system, voltages, guess=None, tol=1e-6,
+                periodic_bcs=True, maxiter=300, verbose=True, htp=1, fmt='npz', file_name='save'):
+        """
+        Solve the Drift Diffusion Poisson equations for the voltages provided. The
+        results are stored in files with ``.npz`` format by default (See below for
+        saving in Matlab format). The steady state current is computed at the
+        end of the voltage loop and returned. Note that the
+        potential is always applied on the right contact.
+    
+        Parameters
+        ----------
+        system: Builder
+            The discretized system.
+        voltages: array-like
+            List of voltages for which the current should be computed.
+        file_name: string
+            Name of the file to write the data to. The file name will be appended
+            the index of the voltage list, e.g. ``file_name_0.npz``.
+        guess: dictionary of numpy arrays of floats (optional)
+            Starting point of the solver. Keys of the dictionary must be 'efn',
+            'efp', 'v' for the electron and quasi-Fermi levels, and the
+            electrostatic potential respectively.
+        tol: float
+            Accepted error made by the Newton-Raphson scheme.
+        periodic_bcs: boolean
+            Defines the choice of boundary conditions in the y-direction. True
+            (False) corresponds to periodic (abrupt) boundary conditions.
+        maxiter: integer
+            Maximum number of steps taken by the Newton-Raphson scheme.
+        verbose: boolean
+            The solver returns the step number and the associated error at every
+            step, and this function prints the current applied voltage if set to True (default).
+        htp: integer
+            Number of homotopic Newton loops to perform.
+        fmt: string
+            Format string for the data files. Use ``mat`` to save the data in a
+            Matlab format (version 5 and above).
+    
+        Returns
+        -------
+        J: numpy array of floats
+            Steady state current computed for each voltage value.
+    
+        Notes
+        -----
+        The data files can be loaded and used as follows:
+    
+        >>> results = np.load('file.npz')
+        >>> efn = results['efn']
+        >>> efp = results['efp']
+        >>> v = results['v']
+        """
+        # create a dictionary 'result' with efn and efp
+        if guess is None:
+            result = self.solve(system, compute='Poisson', tol=tol,
+                                periodic_bcs=periodic_bcs, maxiter=maxiter, 
+                                verbose=verbose, htp=htp)
+        else:
+            result = guess
+    
+        # sites of the right contact
+        nx = system.nx
+        s = [nx-1 + j*nx for j in range(system.ny)]
+    
+        # sign of the voltage to apply
+        if system.rho[nx-1] < 0:
+            q = 1
+        else:
+            q = -1
+    
+        # Solving equilbrium potential first
+        if self.equilibrium is not None:
+            if verbose:
+                logging.info("Equilibrium potential already computed. Moving on.")
+        else:
+            self.solve(system, compute='Poisson', tol=tol,
+                       periodic_bcs=periodic_bcs, maxiter=maxiter, 
+                       verbose=verbose, htp=htp)
+    
+        # Applied potentials made dimensionless
+        Vapp = [i / system.scaling.energy for i in voltages]
+        # Array of the steady state current
+        J = np.zeros((len(Vapp),))
+        J[:] = np.nan
+    
+        result_array = {'efn': np.empty((len(voltages), nx)),
+                    'efp': np.empty((len(voltages), nx)),\
+                    'v': np.empty((len(voltages), nx))}
+    
+        last_converged_idx = 0
+    
+        for idx, vapp in enumerate(Vapp):
+    
+            if verbose:
+                logging.info("Applied voltage: {0} V".format(voltages[idx]))
+    
+            # Apply the voltage on the right contact
+            result['v'][s] = self.equilibrium[s] + q*vapp
+    
+            # Call the Drift Diffusion Poisson solver
+            result = self.solve(system, guess=result, tol=tol, periodic_bcs=periodic_bcs,\
+                                maxiter=maxiter, verbose=verbose, htp=htp)
+    
+            if result is not None:
+                #1. Save efn, efp, v
+    
+                if file_name is not None:
+                
+                    name = file_name + "_{0}".format(idx)
+                    # add some system settings to the saved results
+                
+                    if fmt == 'mat':
+                        save_sim(system, result, name, fmt='mat')
+                    else:
+                        filename = "%s.gzip" % name
+                        save_sim(system, result, filename)
+                    # 2. Compute the steady state current
+    
+                result_array['efn'][idx, :] = result['efn']
+                result_array['efp'][idx, :] = result['efp']
+                result_array['v'][idx, :] = result['v']
+    
+                last_converged_idx = idx
+    
+                try:
+                    az = Analyzer(system, result)
+                    J[idx] = az.full_current()
+                except Exception:
+                   logging.info("Could not compute the current for the applied voltage"\
+                    + " {0} V (index {1}).".format(voltages[idx], idx))
+    
+            else:
+                logging.info("The solver failed to converge for the applied voltage"\
+                      + " {0} V (index {1}).".format(voltages[idx], idx))
+    
+                result_array['efn'][idx, :] = np.nan
+                result_array['efp'][idx, :] = np.nan
+                result_array['v'][idx, :] = np.nan
+    
+                # set guess for next voltage to the last converged solution
+                result = {'efn': result_array['efn'][last_converged_idx, :],\
+                          'efp': result_array['efp'][last_converged_idx, :],\
+                          'v': result_array['v'][last_converged_idx, :]}
+                # return J, result
+                break #breaks if the solver does not converge #A MODIFIER
+    
+        return J, result_array
 
 
 default = Solver()
 solve = default.solve
 IVcurve = default.IVcurve
+IVcurve_save=default.IVcurve_save

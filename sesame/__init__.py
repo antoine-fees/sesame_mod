@@ -5,18 +5,12 @@
 
 from ._version import __version__
 
-try:
-    import matplotlib
-    matplotlib.use('Qt5Agg')
-except:
-    pass
-
 __all__ = ['builder', 'analyzer']
 for module in __all__:
     exec('from . import {0}'.format(module))
 
 available = [('builder', ['Scaling', 'Builder']),
-             ('solvers', ['solve', 'IVcurve']),
+             ('solvers', ['solve', 'IVcurve', 'IVcurve_save']),
              ('analyzer', ['Analyzer'])]
 for module, names in available:
     exec('from .{0} import {1}'.format(module, ', '.join(names)))

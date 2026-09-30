@@ -20,7 +20,6 @@ except:
     mpl_enabled = False
 
 
-
 class Analyzer():
     """
     Object that simplifies the extraction of physical data (densities, currents,
@@ -140,6 +139,60 @@ class Analyzer():
 
         if show:
             plt.show()
+            
+    def band_diagram_returning(self, location):
+        """
+        Compute the band diagram between two points defining a line. Display a
+        plot if fig is None.
+
+        Parameters
+        ----------
+        location: array-like ((x1,y1), (x2,y2))
+            Tuple of two points defining a line over which to compute a band
+            diagram.
+
+        fig: Maplotlib figure
+            A plot is added to it if given. If not given, a new one is created and 
+            displayed.
+
+        """
+        p1, p2 = location
+        if self.sys.dimension == 1:
+            idx1, _ = get_indices(self.sys, (p1[0],0,0))
+            idx2, _ = get_indices(self.sys, (p2[0],0,0))
+            X = self.sys.xpts[idx1:idx2]
+            sites = np.arange(idx1, idx2, 1, dtype=int)
+        if self.sys.dimension == 2:
+            X, sites = self.line(self.sys, p1, p2)
+
+        show = False
+
+        # add axis to figure
+        #ax = fig.add_subplot(111)
+
+        vt = self.sys.scaling.energy
+        X = X * 1e4  # in um
+
+        #l1, = ax.plot(X, vt*self.efn[sites], lw=2, color='#2e89cf', ls='--')
+        #l2, = ax.plot(X, vt*self.efp[sites], lw=2, color='#cf392e', ls='--')
+        #l3, = ax.plot(X, -vt * (self.v[sites] + self.sys.bl[sites]), lw=2, color='k', ls='-')
+        #l4, = ax.plot(X, -vt * (self.v[sites] + self.sys.bl[sites] + self.sys.Eg[sites]), lw=2, color='k', ls='-')
+
+        #fig.legend([l1, l2], [r'$\mathregular{E_{F_n}}$',\
+        #                      r'$\mathregular{E_{F_p}}$'])
+
+
+        #ax.set_xlabel(r'Position [$\mathregular{\mu m}$]')
+        #ax.set_ylabel('Energy [eV]')
+
+        #if show:
+        #    plt.show()
+        a=1e3*X
+        b=vt*self.efn[sites]
+        c=vt*self.efp[sites]
+        d=(-vt * (self.v[sites] + self.sys.bl[sites]))
+        e=(-vt * (self.v[sites] + self.sys.bl[sites] + self.sys.Eg[sites]))
+        return a, b, c, d, e 
 
     def electron_density(self, location=None):
         """

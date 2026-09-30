@@ -1,3 +1,7 @@
+A fork of sesame to add a function 'IVcurve_save' in order to save the intermediate files necessary for post-processing
+
+
+-----
 About
 -----
 
